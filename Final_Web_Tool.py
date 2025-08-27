@@ -25,21 +25,16 @@ if "inputs_collected" not in st.session_state:
         "investment_style": None,
         "expected_fd_rate": None,
     }
-if "optimizer_ready" not in st.session_state:
-    st.session_state.optimizer_ready = False
-if "conversation_complete" not in st.session_state:
-    st.session_state.conversation_complete = False
+if "all_inputs_collected" not in st.session_state:
+    st.session_state.all_inputs_collected = False
+if "results" not in st.session_state:
+    st.session_state.results = None
 
 # -----------------------------
 # PART 1: Backend Optimizer (from THE FINAL DAY.py)
 # -----------------------------
 
 # All functions from the original THE FINAL DAY.py are included here.
-# NOTE: The original script's "Analytics.py" part is assumed to have run
-# and generated the necessary Excel file. In a real-world app, you would
-# integrate the analytics part or ensure the file exists. For this tool,
-# we are assuming `Nifty50_Portfolio_Analytics.xlsx` is available.
-
 EXCEL_INPUT = "Nifty50_Portfolio_Analytics.xlsx"
 EXCEL_OUTPUT = "Portfolio_Optimization_Output.xlsx"
 RFR_TICKER = "^IRX"
@@ -283,7 +278,7 @@ def handle_user_input(user_prompt):
             fd_rate = float("".join(c for c in user_prompt if c.isdigit() or c == "."))
             if fd_rate >= 0:
                 st.session_state.inputs_collected["expected_fd_rate"] = fd_rate
-                st.session_state.optimizer_ready = True
+                st.session_state.all_inputs_collected = True
                 return "Thank you! I have all the information I need. You can now click the 'Generate Portfolio' button to see your optimized portfolio."
             else:
                 return "Please provide a valid FD rate."
@@ -307,35 +302,32 @@ if not st.session_state.messages:
 
 # Main chat input loop
 if prompt := st.chat_input("Start a conversation here..."):
-    # Display user message in chat message container
     st.chat_message("user").markdown(prompt)
     st.session_state.messages.append({"role": "user", "content": prompt})
     
-    # Process the prompt to get the next bot message
     response = handle_user_input(prompt)
     with st.chat_message("assistant"):
         st.markdown(response)
         st.session_state.messages.append({"role": "assistant", "content": response})
 
 # Button to generate portfolio when all inputs are collected
-if st.session_state.optimizer_ready:
+if st.session_state.all_inputs_collected and st.session_state.results is None:
     if st.button("Generate Portfolio", type="primary"):
         with st.spinner("Optimizing your portfolio... This may take a moment."):
             try:
-                # Call the main optimizer function
                 results = run_optimizer(st.session_state.inputs_collected)
                 if isinstance(results, str):
-                    st.error(results) # Display solver failure
+                    st.error(results)
                 else:
                     st.session_state.results = results
-                    st.session_state.conversation_complete = True
             except Exception as e:
                 st.error(f"An error occurred during optimization: {e}")
             finally:
-                st.experimental_rerun()
+                # This will simply re-render the app, now with results in session_state
+                pass
 
 # Display results if optimization is complete
-if st.session_state.conversation_complete:
+if st.session_state.results is not None:
     results = st.session_state.results
     st.markdown("---")
     st.subheader("✅ Optimized Portfolio Results")

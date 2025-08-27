@@ -170,15 +170,6 @@ def fetch_latest_prices(tickers):
             prices[t] = np.nan
     return pd.Series(prices, name="LastPrice")
 
-def compute_expected_returns_capm(betas, monthly_rf, monthly_returns, horizon_m):
-    if monthly_returns is not None and "NIFTY_50" in monthly_returns.columns:
-        mret = monthly_returns["NIFTY_50"].dropna().tail(horizon_m)
-        exp_rm = mret.mean() if len(mret) > 0 else monthly_rf + 0.0065
-    else:
-        exp_rm = monthly_rf + 0.0065
-    exp_excess = exp_rm - monthly_rf
-    return pd.Series(monthly_rf + betas.values * exp_excess, index=betas.index)
-
 def solve_continuous_utility(mu, cov, A, max_loss_tolerance, var_alpha, equity_indices, max_equity_alloc):
     mu_arr, Sigma = mu.values, cov.values
     def obj(w): return -(w @ mu_arr - 0.5 * A * (w @ Sigma @ w))
@@ -242,7 +233,6 @@ def run_optimizer(user_inputs):
     generate_portfolio_analytics(TIME_HORIZON_M)
     
     betas, cov, monthly_returns = read_inputs()
-    investable_tickers = betas.index.tolist()
     
     fd_monthly = (1.0 + FD_RATE / 100.0) ** (1.0/12.0) - 1.0
 
@@ -389,8 +379,11 @@ if st.session_state.inputs_collected.get("all_found"):
                 st.session_state.optimizer_results = results
                 st.success("Portfolio generated successfully!")
                 st.rerun()
+            except RuntimeError as e:
+                st.error(f"An error occurred during optimization: {e}. Please adjust your inputs.")
             except Exception as e:
-                st.error(f"An error occurred during optimization: {e}")
+                st.error(f"An unexpected error occurred: {e}")
+
 
 if "optimizer_results" in st.session_state:
     st.subheader("Final Portfolio Allocation 📊")

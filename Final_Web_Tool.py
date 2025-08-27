@@ -405,7 +405,6 @@ if not st.session_state.all_inputs_collected:
             if all(value is not None for value in st.session_state.inputs_collected.values()):
                 st.session_state.all_inputs_collected = True
                 st.session_state.messages.append({"role": "assistant", "content": "Thank you! I have all the information I need. Please click the 'Generate Portfolio' button to see your optimized portfolio."})
-                st.experimental_rerun()
 
 # Button to generate portfolio when all inputs are collected
 if st.session_state.all_inputs_collected and st.session_state.results is None:

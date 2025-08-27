@@ -1,175 +1,115 @@
-# Final_Web_Tool.py
-# Final_Web_Tool.py
-
+import streamlit as st
 import os
 import sys
 import json
-import re
-from openai import OpenAI
-import time
-import pandas as pd
-import numpy as np
 import math
 import warnings
+import pandas as pd
+import numpy as np
 from scipy.optimize import minimize
 from scipy.stats import norm
 import yfinance as yf
-import streamlit as st
 
-# ==============================================================================
-# PART 1: GENAI CONVERSATIONAL INTERFACE (ADAPTED FOR STREAMLIT)
-# ==============================================================================
+# --- API KEY & SETUP ---
+# Fetch the API key from environment variables
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
-def get_chatbot_response(user_input, conversation_history):
-    """
-    Sends user input and conversation history to GenAI to get a response.
-    """
-    try:
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        if not client.api_key:
-            st.error("Error: OPENAI_API_KEY environment variable not set.")
-            return "Please set your OpenAI API key as an environment variable.", None
-    except Exception as e:
-        st.error(f"Error initializing OpenAI client: {e}")
-        return "An error occurred. Please check your API key and connection.", None
+# --- Chatbot-specific state variables ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "inputs_collected" not in st.session_state:
+    st.session_state.inputs_collected = {
+        "total_investment": None,
+        "time_horizon_y": None,
+        "max_loss_pct": None,
+        "investment_style": None,
+        "expected_fd_rate": None,
+    }
+if "optimizer_ready" not in st.session_state:
+    st.session_state.optimizer_ready = False
+if "conversation_complete" not in st.session_state:
+    st.session_state.conversation_complete = False
 
-    conversation_history.append({"role": "user", "content": user_input})
+# -----------------------------
+# PART 1: Backend Optimizer (from THE FINAL DAY.py)
+# -----------------------------
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=conversation_history,
-            temperature=0.7
-        )
-        ai_response = response.choices[0].message.content
-        conversation_history.append({"role": "assistant", "content": ai_response})
-    except Exception as e:
-        st.error(f"Error getting AI response: {e}")
-        return "An error occurred with the AI. Please try again.", None
-
-    parsing_prompt = conversation_history + [
-        {"role": "system", "content": """
-            Based on the entire conversation so far, extract the five required values and return them in a JSON object. If a value is still missing, use null.
-            Do not include any other text.
-            Example JSON: {"capital_amount": 2000000, "time_horizon_years": 3, "risk_tolerance_loss_pct": 10, "investment_style": "Moderate", "FD_rate": 6.5}
-            """}
-    ]
-    try:
-        parsing_response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=parsing_prompt,
-            response_format={"type": "json_object"},
-            temperature=0.0
-        )
-        parsed_data = json.loads(parsing_response.choices[0].message.content)
-        return ai_response, parsed_data
-    except Exception as e:
-        return ai_response, None
-
-# ==============================================================================
-# PART 2: CORE LOGIC (ADAPTED FROM 'THE FINAL DAY.py')
-# ==============================================================================
+# All functions from the original THE FINAL DAY.py are included here.
+# NOTE: The original script's "Analytics.py" part is assumed to have run
+# and generated the necessary Excel file. In a real-world app, you would
+# integrate the analytics part or ensure the file exists. For this tool,
+# we are assuming `Nifty50_Portfolio_Analytics.xlsx` is available.
 
 EXCEL_INPUT = "Nifty50_Portfolio_Analytics.xlsx"
 EXCEL_OUTPUT = "Portfolio_Optimization_Output.xlsx"
-SHEET_BETAS = "Betas"
-SHEET_COV = "Covariance_Matrix"
-SHEET_RET = "Monthly_Returns"
 RFR_TICKER = "^IRX"
+FALLBACK_ANNUAL_RF = 0.045
 DROP_ASSETS_CONTAINING = ["NIFTY_50", "TBILL"]
 PRICE_LOOKBACK_DAYS = 5
 VAR_ALPHA = 0.95
 
-def map_risk_aversion_from_var(MAX_LOSS_TOLERANCE):
-    if MAX_LOSS_TOLERANCE >= 0.50:
-        return 1
-    elif MAX_LOSS_TOLERANCE >= 0.40:
-        return 2
-    elif MAX_LOSS_TOLERANCE >= 0.35:
-        return 3
-    elif MAX_LOSS_TOLERANCE >= 0.30:
-        return 4
-    elif MAX_LOSS_TOLERANCE >= 0.25:
-        return 5
-    elif MAX_LOSS_TOLERANCE >= 0.20:
-        return 6
-    elif MAX_LOSS_TOLERANCE >= 0.15:
-        return 7
-    elif MAX_LOSS_TOLERANCE >= 0.10:
-        return 8
-    elif MAX_LOSS_TOLERANCE >= 0.05:
-        return 9
-    else:
-        return 10
-
-def generate_portfolio_analytics(time_horizon_months):
-    nifty50_tickers = [
-        "ADANIENT.NS", "ADANIPORTS.NS", "APOLLOHOSP.NS", "ASIANPAINT.NS", "AXISBANK.NS",
-        "BAJAJ-AUTO.NS", "BAJFINANCE.NS", "BAJAJFINSV.NS", "BEL.NS", "BHARTIARTL.NS",
-        "CIPLA.NS", "COALINDIA.NS", "DRREDDY.NS", "EICHERMOT.NS", "GRASIM.NS",
-        "HCLTECH.NS", "HDFCBANK.NS", "HDFCLIFE.NS", "HEROMOTOCO.NS", "HINDALCO.NS",
-        "HINDUNILVR.NS", "ICICIBANK.NS", "INDUSINDBK.NS", "INFY.NS", "ITC.NS",
-        "JIOFIN.NS", "JSWSTEEL.NS", "KOTAKBANK.NS", "LT.NS", "M&M.NS",
-        "MARUTI.NS", "NESTLEIND.NS", "NTPC.NS", "ONGC.NS", "POWERGRID.NS",
-        "RELIANCE.NS", "SBILIFE.NS", "SBIN.NS", "SHRIRAMFIN.NS", "SUNPHARMA.NS",
-        "TCS.NS", "TATACONSUM.NS", "TATAMOTORS.NS", "TATASTEEL.NS", "TECHM.NS",
-        "TITAN.NS", "TRENT.NS", "ULTRACEMCO.NS", "WIPRO.NS", "NIFTY_50"
-    ]
-    all_tickers = [yf.Ticker(t) for t in nifty50_tickers]
-    data = yf.download([t.ticker for t in all_tickers], period='max')['Close']
-    data = data.rename(columns={t.ticker: t.ticker for t in all_tickers})
-    data.dropna(inplace=True)
-    monthly_prices = data.resample('M').last()
-    monthly_returns = monthly_prices.pct_change().dropna()
-    returns_subset = monthly_returns.tail(time_horizon_months)
-    betas = {}
-    nifty_returns = returns_subset['NIFTY_50']
-    for col in returns_subset.columns:
-        if col == 'NIFTY_50':
-            continue
-        cov_val = np.cov(returns_subset[col].dropna(), nifty_returns.dropna())[0][1]
-        var_val = np.var(nifty_returns.dropna())
-        beta = cov_val / var_val if var_val != 0 else np.nan
-        betas[col] = beta
-    beta_df = pd.DataFrame.from_dict(betas, orient='index', columns=['Beta'])
-    cov_matrix = returns_subset.cov()
-    with pd.ExcelWriter(EXCEL_INPUT, engine='openpyxl') as writer:
-        monthly_returns.to_excel(writer, sheet_name='Monthly_Returns')
-        returns_subset.to_excel(writer, sheet_name=f'Returns_Last_{time_horizon_months}M')
-        beta_df.to_excel(writer, sheet_name='Betas')
-        cov_matrix.to_excel(writer, sheet_name='Covariance_Matrix')
-
 def read_inputs():
     if not os.path.exists(EXCEL_INPUT):
-        raise FileNotFoundError(f"Could not find '{EXCEL_INPUT}' in current folder.")
+        st.error(f"Could not find '{EXCEL_INPUT}'. Please ensure the analytics file is in the same directory.")
+        st.stop()
     xl = pd.ExcelFile(EXCEL_INPUT)
-    betas = pd.read_excel(xl, SHEET_BETAS, index_col=0)
-    cov = pd.read_excel(xl, SHEET_COV, index_col=0)
-    monthly_returns = pd.read_excel(xl, SHEET_RET, index_col=0, parse_dates=True)
+    betas = pd.read_excel(xl, "Betas", index_col=0)
+    cov = pd.read_excel(xl, "Covariance_Matrix", index_col=0)
+    monthly_returns = None
+    if "Monthly_Returns" in xl.sheet_names:
+        monthly_returns = pd.read_excel(xl, "Monthly_Returns", index_col=0, parse_dates=True)
+
     cov = cov.loc[cov.index.intersection(cov.columns), cov.columns.intersection(cov.index)]
     assets = list(cov.columns)
-    investable = []
-    for a in assets:
-        if any(tag in a.upper() for tag in [s.upper() for s in DROP_ASSETS_CONTAINING]):
-            continue
-        investable.append(a)
-    beta_series = betas.iloc[:, 0] if betas.shape[1] == 1 else betas.squeeze()
-    beta_series = beta_series.reindex(investable).astype(float)
+    investable = [a for a in assets if not any(tag in a.upper() for tag in DROP_ASSETS_CONTAINING)]
+    beta_series = betas.squeeze().reindex(investable).astype(float)
     cov_invest = cov.loc[investable, investable]
     return beta_series, cov_invest, monthly_returns
+
+def fetch_latest_risk_free_monthly():
+    annual_rf = None
+    try:
+        r = yf.download(RFR_TICKER, period="1mo", interval="1d", progress=False)
+        if not r.empty and "Close" in r:
+            latest = r["Close"].dropna().iloc[-1]
+            annual_rf = (latest / 100.0) if latest > 1 else float(latest)
+    except Exception:
+        pass
+    if annual_rf is None:
+        annual_rf = FALLBACK_ANNUAL_RF
+    monthly_rf = (1 + annual_rf) ** (1 / 12) - 1
+    return monthly_rf, annual_rf
+
+def compute_expected_returns_capm(betas, monthly_rf, monthly_returns, horizon_m):
+    if monthly_returns is not None and "NIFTY_50" in monthly_returns.columns:
+        mret = monthly_returns["NIFTY_50"].dropna().tail(horizon_m)
+        exp_rm = mret.mean() if len(mret) > 0 else monthly_rf + 0.0065
+    else:
+        exp_rm = monthly_rf + 0.0065
+    exp_excess = exp_rm - monthly_rf
+    return pd.Series(monthly_rf + betas.values * exp_excess, index=betas.index)
 
 def fetch_latest_prices(tickers):
     prices = {}
     for t in tickers:
         try:
             hist = yf.download(t, period=f"{PRICE_LOOKBACK_DAYS}d", interval="1d", progress=False)["Close"].dropna()
-            if not hist.empty:
-                prices[t] = float(hist.iloc[-1])
-            else:
-                prices[t] = np.nan
-        except Exception:
+            prices[t] = float(hist.iloc[-1]) if not hist.empty else np.nan
+        except:
             prices[t] = np.nan
-    return pd.Series(prices, name="LastPrice")
+    return pd.Series(prices)
+
+def map_risk_aversion_from_var(MAX_LOSS_TOLERANCE):
+    if MAX_LOSS_TOLERANCE >= 0.50: return 1
+    elif MAX_LOSS_TOLERANCE >= 0.40: return 2
+    elif MAX_LOSS_TOLERANCE >= 0.35: return 3
+    elif MAX_LOSS_TOLERANCE >= 0.30: return 4
+    elif MAX_LOSS_TOLERANCE >= 0.25: return 5
+    elif MAX_LOSS_TOLERANCE >= 0.20: return 6
+    elif MAX_LOSS_TOLERANCE >= 0.15: return 7
+    elif MAX_LOSS_TOLERANCE >= 0.10: return 8
+    elif MAX_LOSS_TOLERANCE >= 0.05: return 9
+    else: return 10
 
 def solve_continuous_utility(mu, cov, A, max_loss_tolerance, var_alpha, equity_indices, max_equity_alloc):
     mu_arr, Sigma = mu.values, cov.values
@@ -182,7 +122,7 @@ def solve_continuous_utility(mu, cov, A, max_loss_tolerance, var_alpha, equity_i
             std_r = math.sqrt(w @ Sigma @ w)
             ann_mean = (1 + mean_r) ** 12 - 1
             ann_std = std_r * math.sqrt(12)
-            var_value = -(ann_mean + z * ann_std)
+            var_value = -(ann_mean - z * ann_std)
             return max_loss_tolerance - var_value
         cons.append({"type": "ineq", "fun": var_con})
     cons.append({"type": "ineq", "fun": lambda w: max_equity_alloc - np.sum(w[equity_indices])})
@@ -196,7 +136,7 @@ def compute_integer_shares(weights, prices, total_investment):
     for ticker, w in weights.items():
         if ticker == "FIXED_DEPOSIT":
             allocated_amt = total_investment * w
-            shares_dict[ticker] = {"Price": np.nan, "Shares": np.nan, "Allocated_Value": allocated_amt, "Allocation_%": w*100}
+            shares_dict[ticker] = {"Price": np.nan, "Shares": np.nan, "Allocated_Value": allocated_amt, "Allocation_%": w * 100}
             total_allocated += allocated_amt
             continue
         price = prices.get(ticker, np.nan)
@@ -220,180 +160,197 @@ def compute_integer_shares(weights, prices, total_investment):
     return df_shares
 
 def run_optimizer(user_inputs):
-    TOTAL_INVESTMENT = user_inputs["TOTAL_INVESTMENT"]
-    TIME_HORIZON_Y = user_inputs["TIME_HORIZON_YEARS"]
-    MAX_LOSS_TOLERANCE_PCT = user_inputs["RISK_TOLERANCE_LOSS_PCT"]
-    INVESTMENT_STYLE = user_inputs["INVESTMENT_STYLE"]
-    FD_RATE = user_inputs["FD_RATE"]
+    TOTAL_INVESTMENT = user_inputs["total_investment"]
+    TIME_HORIZON_Y = user_inputs["time_horizon_y"]
+    MAX_LOSS_TOLERANCE = user_inputs["max_loss_pct"] / 100
+    FD_RETURN_ANNUAL = user_inputs["expected_fd_rate"] / 100
+    STYLE = user_inputs["investment_style"]
 
-    MAX_LOSS_TOLERANCE = MAX_LOSS_TOLERANCE_PCT / 100.0
-    TIME_HORIZON_M = int(TIME_HORIZON_Y * 12)
-
-    RISK_AVERSION_A = map_risk_aversion_from_var(MAX_LOSS_TOLERANCE)
-
-    generate_portfolio_analytics(TIME_HORIZON_M)
+    time_horizon_m = int(round(TIME_HORIZON_Y * 12))
     
     betas, cov, monthly_returns = read_inputs()
-    
-    fd_monthly = (1.0 + FD_RATE / 100.0) ** (1.0/12.0) - 1.0
-
-    mu = compute_expected_returns_capm(
-        betas=betas,
-        monthly_returns=monthly_returns,
-        monthly_rf=fd_monthly,
-        horizon_m=TIME_HORIZON_M
-    )
+    rf_monthly, rf_annual = fetch_latest_risk_free_monthly()
+    mu_equities = compute_expected_returns_capm(betas, rf_monthly, monthly_returns, time_horizon_m)
     prices = fetch_latest_prices(betas.index)
-    
-    if INVESTMENT_STYLE.lower() == "aggressive":
+
+    fd_monthly = (1 + FD_RETURN_ANNUAL) ** (1 / 12) - 1
+
+    if STYLE == "Aggressive":
         max_equity_alloc = min(0.30 + 0.02 * TIME_HORIZON_Y + 0.35, 0.90)
-    elif INVESTMENT_STYLE.lower() == "moderate":
+    elif STYLE == "Moderate":
         max_equity_alloc = min(0.30 + 0.02 * TIME_HORIZON_Y + 0.20, 0.90)
-    else:
+    else: # Conservative
         max_equity_alloc = min(0.30 + 0.02 * TIME_HORIZON_Y, 0.90)
 
     fd_label = "FIXED_DEPOSIT"
-    mu_all = pd.concat([mu, pd.Series([fd_monthly], index=[fd_label])])
-    prices.loc[fd_label] = np.nan
+    mu_all = mu_equities.copy()
+    mu_all.loc[fd_label] = fd_monthly
     cov_all = cov.copy()
     cov_all[fd_label] = 0
     cov_all.loc[fd_label] = 0
     equity_indices = [i for i, lbl in enumerate(mu_all.index) if lbl != fd_label]
     
-    w = solve_continuous_utility(
-        mu_all, cov_all, RISK_AVERSION_A,
-        max_loss_tolerance=MAX_LOSS_TOLERANCE,
-        var_alpha=VAR_ALPHA,
-        equity_indices=equity_indices,
-        max_equity_alloc=max_equity_alloc
-    )
+    w_eq = np.ones(len(mu_equities)) / len(mu_equities)
+    mean_r = w_eq @ mu_equities.values
+    std_r = math.sqrt(w_eq @ cov.values @ w_eq)
+    ann_mean = (1 + mean_r) ** 12 - 1
+    ann_std = std_r * math.sqrt(12)
+    z = norm.ppf(1 - VAR_ALPHA)
+    var_value = -(ann_mean - z * ann_std)
+    A = map_risk_aversion_from_var(MAX_LOSS_TOLERANCE)
+
+    w = solve_continuous_utility(mu_all, cov_all, A, MAX_LOSS_TOLERANCE, VAR_ALPHA, equity_indices, max_equity_alloc)
     if w is None:
-        raise RuntimeError("Optimization failed to find a solution.")
-
+        return "Solver failed. Please try different inputs."
+    
     weights = pd.Series(w, index=mu_all.index)
-
     port_return = (1 + weights @ mu_all.values) ** 12 - 1
     port_std = math.sqrt(weights @ cov_all.values @ weights) * math.sqrt(12)
-
     shares_df = compute_integer_shares(weights, prices, TOTAL_INVESTMENT)
-    
-    summary = pd.DataFrame({
-        "Metric": [
-            "Total Investment", "Time Horizon (Years)", "Max Loss Tolerance (%)", "Investment Style", "FD Rate (%)", "Risk Aversion (A)"
-        ],
-        "Value": [
-            TOTAL_INVESTMENT, TIME_HORIZON_Y, MAX_LOSS_TOLERANCE_PCT, INVESTMENT_STYLE, FD_RATE, RISK_AVERSION_A
-        ]
-    })
-    
+
     return {
-        "summary": summary,
+        "weights": weights,
+        "return": port_return,
+        "risk": port_std,
         "shares": shares_df,
-        "optimal_weights": weights.to_frame("Weight")
     }
+
+# -----------------------------
+# PART 2: Streamlit & Chatbot
+# -----------------------------
+
+def initialize_chat():
+    """Initial greeting message from the assistant."""
+    st.session_state.messages.append(
+        {"role": "assistant", "content": "Hello! I am your personal portfolio optimization assistant. I can help you create a personalized investment plan. Let's start with a few questions. To get started, what is the total investment amount you have in mind?"}
+    )
+
+def handle_user_input(user_prompt):
+    """
+    Processes user input to collect the 5 required values.
+    Uses simple keyword/context matching and type conversion.
+    """
+    user_prompt_lower = user_prompt.lower()
     
-# ==============================================================================
-# PART 3: STREAMLIT APP
-# ==============================================================================
+    if st.session_state.inputs_collected["total_investment"] is None:
+        try:
+            amount = float("".join(c for c in user_prompt if c.isdigit() or c == "."))
+            if amount > 0:
+                st.session_state.inputs_collected["total_investment"] = amount
+                return "Thank you. Now, what is your investment time horizon in years?"
+            else:
+                return "Please provide a valid investment amount greater than zero."
+        except (ValueError, IndexError):
+            return "I couldn't understand that. Please provide the total investment amount as a number."
 
-st.set_page_config(page_title="Intelligent Portfolio Tool", layout="wide")
-st.title("Intelligent Portfolio Tool 📈")
+    if st.session_state.inputs_collected["time_horizon_y"] is None:
+        try:
+            years = float("".join(c for c in user_prompt if c.isdigit() or c == "."))
+            if years > 0:
+                st.session_state.inputs_collected["time_horizon_y"] = years
+                return "Great. Before we talk about risk, let's clarify something. VaR (Value at Risk) is a way to measure the **maximum expected loss** for a portfolio over a specific time period. For our model, we'll use a 95% confidence level. What is the maximum percentage you're willing to lose?"
+            else:
+                return "Please provide a valid time horizon in years greater than zero."
+        except (ValueError, IndexError):
+            return "I couldn't understand that. Please provide the time horizon as a number of years."
 
-st.write("Welcome! Let's build your optimized investment portfolio.")
+    if st.session_state.inputs_collected["max_loss_pct"] is None:
+        try:
+            loss = float("".join(c for c in user_prompt if c.isdigit() or c == "."))
+            if 0 <= loss <= 100:
+                st.session_state.inputs_collected["max_loss_pct"] = loss
+                return "Got it. Your investment style also helps determine the portfolio mix. A **Conservative** style aims for stability with lower risk and return. A **Moderate** style balances growth and safety. An **Aggressive** style prioritizes high growth with higher risk. What is your preferred investment style?"
+            else:
+                return "Please provide a percentage between 0 and 100."
+        except (ValueError, IndexError):
+            return "I couldn't understand that. Please provide the maximum acceptable loss as a percentage (e.g., 10 for 10%)."
+
+    if st.session_state.inputs_collected["investment_style"] is None:
+        if "aggressive" in user_prompt_lower:
+            st.session_state.inputs_collected["investment_style"] = "Aggressive"
+            return "Aggressive style selected. Finally, what is the current expected annual return on a Fixed Deposit (as a percentage, e.g., 6.5)?"
+        elif "moderate" in user_prompt_lower:
+            st.session_state.inputs_collected["investment_style"] = "Moderate"
+            return "Moderate style selected. Finally, what is the current expected annual return on a Fixed Deposit (as a percentage, e.g., 6.5)?"
+        elif "conservative" in user_prompt_lower:
+            st.session_state.inputs_collected["investment_style"] = "Conservative"
+            return "Conservative style selected. Finally, what is the current expected annual return on a Fixed Deposit (as a percentage, e.g., 6.5)?"
+        else:
+            return "Please choose one of the three styles: Aggressive, Moderate, or Conservative."
+
+    if st.session_state.inputs_collected["expected_fd_rate"] is None:
+        try:
+            fd_rate = float("".join(c for c in user_prompt if c.isdigit() or c == "."))
+            if fd_rate >= 0:
+                st.session_state.inputs_collected["expected_fd_rate"] = fd_rate
+                st.session_state.optimizer_ready = True
+                return "Thank you! I have all the information I need. You can now click the 'Generate Portfolio' button to see your optimized portfolio."
+            else:
+                return "Please provide a valid FD rate."
+        except (ValueError, IndexError):
+            return "I couldn't understand that. Please provide the FD rate as a percentage."
+    
+    return "I have all the information needed. Please click the 'Generate Portfolio' button."
+
+# --- Streamlit UI ---
+st.title("💰 Portfolio Optimization Chatbot")
 st.markdown("---")
 
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "system", "content": """
-            You are a highly intelligent and friendly financial assistant. Your purpose is to have a natural conversation with the user to understand their investment goals and financial personality. You need to collect five key pieces of information:
-            1. Total investment capital (a number, converting 'lakhs' or 'crores' to a standard numerical value).
-            2. Investment time horizon in years (a number).
-            3. Maximum acceptable loss percentage (a number).
-            4. Investment style ('Aggressive', 'Moderate', or 'Conservative').
-            5. Expected Fixed Deposit rates (a number).
-            
-            Based on the conversation, you must fill a JSON object with these values. If a value is unknown, use null.
-            Example JSON: {"capital_amount": 2000000, "time_horizon_years": 3, "risk_tolerance_loss_pct": 10, "investment_style": "Moderate", "FD_rate": 6.5}
-            
-            Your conversation should also include these explanations:
-            - Explain what an "expected loss" is, as the maximum potential loss with a 95% probability (also known as VaR at 95%).
-            - Explain what the different investment styles depict: Aggressive style implies a high equity allocation, Moderate implies a moderate allocation, and Conservative implies a low allocation.
-            
-            Start the conversation by greeting the user and asking for their investment details.
-            """},
-        {"role": "assistant", "content": "Hello! I'm your portfolio assistant. Please tell me about your investment details so I can help you."}
-    ]
-
-if "inputs_collected" not in st.session_state:
-    st.session_state.inputs_collected = {
-        "capital_amount": None,
-        "time_horizon_years": None,
-        "risk_tolerance_loss_pct": None,
-        "investment_style": None,
-        "FD_rate": None
-    }
-
+# Display chat messages from history on app rerun
 for message in st.session_state.messages:
-    if message["role"] != "system":
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-if not st.session_state.inputs_collected.get("all_found"):
-    if prompt := st.chat_input("What are your investment details?"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+# Initial greeting message
+if not st.session_state.messages:
+    initialize_chat()
 
-        ai_response_text, parsed_data = get_chatbot_response(prompt, st.session_state.messages)
-
-        with st.chat_message("assistant"):
-            st.markdown(ai_response_text)
-            
-        if parsed_data:
-            for key in st.session_state.inputs_collected.keys():
-                if parsed_data.get(key) is not None:
-                    st.session_state.inputs_collected[key] = parsed_data[key]
-            
-            if None not in st.session_state.inputs_collected.values():
-                st.session_state.inputs_collected["all_found"] = True
-                st.rerun()
-
-if st.session_state.inputs_collected.get("all_found"):
-    st.markdown("---")
-    st.subheader("Your Investment Profile Confirmed ✅")
-    st.write("We have collected all the necessary details. Please review and confirm below.")
+# Main chat input loop
+if prompt := st.chat_input("Start a conversation here..."):
+    # Display user message in chat message container
+    st.chat_message("user").markdown(prompt)
+    st.session_state.messages.append({"role": "user", "content": prompt})
     
-    st.json(st.session_state.inputs_collected)
-    
-    if st.button("Generate Portfolio"):
-        with st.spinner("Running optimizer..."):
-            user_inputs_for_optimizer = {
-                "TOTAL_INVESTMENT": float(st.session_state.inputs_collected["capital_amount"]),
-                "TIME_HORIZON_YEARS": float(st.session_state.inputs_collected["time_horizon_years"]),
-                "RISK_TOLERANCE_LOSS_PCT": float(st.session_state.inputs_collected["risk_tolerance_loss_pct"]),
-                "INVESTMENT_STYLE": st.session_state.inputs_collected["investment_style"],
-                "FD_RATE": float(st.session_state.inputs_collected["FD_rate"])
-            }
-            
+    # Process the prompt to get the next bot message
+    response = handle_user_input(prompt)
+    with st.chat_message("assistant"):
+        st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+
+# Button to generate portfolio when all inputs are collected
+if st.session_state.optimizer_ready:
+    if st.button("Generate Portfolio", type="primary"):
+        with st.spinner("Optimizing your portfolio... This may take a moment."):
             try:
-                results = run_optimizer(user_inputs_for_optimizer)
-                st.session_state.optimizer_results = results
-                st.success("Portfolio generated successfully!")
-                st.rerun()
-            except RuntimeError as e:
-                st.error(f"An error occurred during optimization: {e}. Please adjust your inputs.")
+                # Call the main optimizer function
+                results = run_optimizer(st.session_state.inputs_collected)
+                if isinstance(results, str):
+                    st.error(results) # Display solver failure
+                else:
+                    st.session_state.results = results
+                    st.session_state.conversation_complete = True
             except Exception as e:
-                st.error(f"An unexpected error occurred: {e}")
+                st.error(f"An error occurred during optimization: {e}")
+            finally:
+                st.experimental_rerun()
 
+# Display results if optimization is complete
+if st.session_state.conversation_complete:
+    results = st.session_state.results
+    st.markdown("---")
+    st.subheader("✅ Optimized Portfolio Results")
+    st.markdown("### Portfolio Summary")
+    st.metric(label="Expected Annual Return", value=f"{results['return']:.2%}")
+    st.metric(label="Expected Annual Risk (Standard Deviation)", value=f"{results['risk']:.2%}")
 
-if "optimizer_results" in st.session_state:
-    st.subheader("Final Portfolio Allocation 📊")
-    
-    st.write("### Portfolio Summary")
-    st.dataframe(st.session_state.optimizer_results["summary"])
-    
-    st.write("### Recommended Integer Shares")
-    st.dataframe(st.session_state.optimizer_results["shares"])
-    
-    st.write("### Optimal Continuous Weights")
-    st.dataframe(st.session_state.optimizer_results["optimal_weights"])
+    st.markdown("### Recommended Asset Weights")
+    st.dataframe(results['weights'].to_frame("Weight").style.format({"Weight": "{:.2%}"}))
+
+    st.markdown("### Equity-wise Shares Allocation")
+    st.dataframe(results['shares'].style.format({
+        "Price": "₹{:,.2f}",
+        "Shares": "{:,.0f}",
+        "Allocated_Value": "₹{:,.2f}",
+        "Allocation_%": "{:.2f}%",
+        "Leftover_Cash": "₹{:,.2f}"
+    }))

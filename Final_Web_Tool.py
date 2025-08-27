@@ -12,6 +12,7 @@ import warnings
 from scipy.optimize import minimize
 from scipy.stats import norm
 import yfinance as yf
+import plotly.express as px
 
 # ==============================================================================
 # PART 1: GENAI CONVERSATIONAL INTERFACE
@@ -329,11 +330,20 @@ def run_optimizer(user_inputs):
     port_std = math.sqrt(weights @ cov_all.values @ weights) * math.sqrt(12)
     shares_df = compute_integer_shares(weights, prices, TOTAL_INVESTMENT)
 
+    # Get Nifty50 performance for comparison
+    nifty_returns_monthly = monthly_returns['NIFTY_50'].dropna()
+    nifty_mean = nifty_returns_monthly.mean()
+    nifty_std = nifty_returns_monthly.std()
+    nifty_ann_return = (1 + nifty_mean) ** 12 - 1
+    nifty_ann_std = nifty_std * math.sqrt(12)
+
     return {
         "weights": weights,
         "return": port_return,
         "risk": port_std,
         "shares": shares_df,
+        "nifty_ann_return": nifty_ann_return,
+        "nifty_ann_std": nifty_ann_std
     }
 
 # ==============================================================================
@@ -429,13 +439,62 @@ if st.session_state.all_inputs_collected and st.session_state.results is None:
 # Display results if optimization is not complete
 if st.session_state.results is not None:
     results = st.session_state.results
+    
     st.markdown("---")
-    st.subheader("✅ Optimized Portfolio Results")
-    st.markdown("### Portfolio Summary")
-    st.metric(label="Expected Annual Return", value=f"{results['return']:.2%}")
-    st.metric(label="Expected Annual Risk (Standard Deviation)", value=f"{results['risk']:.2%}")
+    
+    # Use columns to create a better layout
+    col1, col2 = st.columns(2)
 
+    with col1:
+        st.subheader("✅ Optimized Portfolio Results")
+        st.markdown("### Portfolio Summary")
+        st.metric(label="Expected Annual Return", value=f"{results['return']:.2%}")
+        st.metric(label="Expected Annual Risk (Standard Deviation)", value=f"{results['risk']:.2%}")
+    
+    with col2:
+        # Create a DataFrame for the performance comparison bar chart
+        performance_data = pd.DataFrame({
+            'Portfolio': ['Optimized', 'Nifty 50 Index'],
+            'Annual Return': [results['return'], results['nifty_ann_return']],
+            'Annual Risk': [results['risk'], results['nifty_ann_std']]
+        })
+        
+        # Melt the DataFrame for Plotly to work correctly
+        melted_performance = pd.melt(performance_data, id_vars=['Portfolio'], var_name='Metric', value_name='Value')
+        
+        st.markdown("### Performance Comparison")
+        fig_bar = px.bar(
+            melted_performance,
+            x='Portfolio',
+            y='Value',
+            color='Metric',
+            barmode='group',
+            title='Portfolio vs. Nifty 50 Index',
+            labels={'Value': 'Percentage', 'Portfolio': 'Portfolio Type'},
+            hover_data={'Value': ':.2%'}
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    # Pie chart for allocation
     st.markdown("### Recommended Asset Weights")
+    
+    # Filter out 0% weights for a cleaner chart
+    weights_df = results['weights'].to_frame("Weight")
+    weights_df = weights_df[weights_df['Weight'] > 0.001] # Filter out tiny weights
+    weights_df = weights_df.reset_index()
+    weights_df.columns = ['Asset', 'Weight']
+
+    fig_pie = px.pie(
+        weights_df,
+        values='Weight',
+        names='Asset',
+        title='Portfolio Asset Allocation',
+        hover_data={'Weight': ':.2%'}
+    )
+    st.plotly_chart(fig_pie, use_container_width=True)
+
+    # Remaining dataframes below the charts
+    st.markdown("### Detailed Allocation")
     st.dataframe(results['weights'].to_frame("Weight").style.format({"Weight": "{:.2%}"}))
 
     st.markdown("### Equity-wise Shares Allocation")

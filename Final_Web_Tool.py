@@ -181,7 +181,7 @@ def solve_continuous_utility(mu, cov, A, max_loss_tolerance, var_alpha, equity_i
             std_r = math.sqrt(w @ Sigma @ w)
             ann_mean = (1 + mean_r) ** 12 - 1
             ann_std = std_r * math.sqrt(12)
-            var_value = -(ann_mean - z * ann_std)
+            var_value = -(ann_mean + z * ann_std)
             return max_loss_tolerance - var_value
         cons.append({"type": "ineq", "fun": var_con})
     cons.append({"type": "ineq", "fun": lambda w: max_equity_alloc - np.sum(w[equity_indices])})
@@ -228,16 +228,13 @@ def run_optimizer(user_inputs):
     MAX_LOSS_TOLERANCE = MAX_LOSS_TOLERANCE_PCT / 100.0
     TIME_HORIZON_M = int(TIME_HORIZON_Y * 12)
 
-    # Calculate Risk Aversion (A) based on Max Loss Tolerance
     RISK_AVERSION_A = map_risk_aversion_from_var(MAX_LOSS_TOLERANCE)
 
-    # This part of the code now generates the analytics file dynamically.
     generate_portfolio_analytics(TIME_HORIZON_M)
     
     betas, cov, monthly_returns = read_inputs()
     investable_tickers = betas.index.tolist()
     
-    # Use FD_RATE as the risk-free rate
     fd_monthly = (1.0 + FD_RATE / 100.0) ** (1.0/12.0) - 1.0
 
     mu = compute_expected_returns_capm(
@@ -248,7 +245,6 @@ def run_optimizer(user_inputs):
     )
     prices = fetch_latest_prices(betas.index)
     
-    # Max Equity Allocation based on Style
     if INVESTMENT_STYLE.lower() == "aggressive":
         max_equity_alloc = min(0.30 + 0.02 * TIME_HORIZON_Y + 0.35, 0.90)
     elif INVESTMENT_STYLE.lower() == "moderate":
@@ -256,7 +252,6 @@ def run_optimizer(user_inputs):
     else:
         max_equity_alloc = min(0.30 + 0.02 * TIME_HORIZON_Y, 0.90)
 
-    # Add FD as synthetic asset
     fd_label = "FIXED_DEPOSIT"
     mu_all = pd.concat([mu, pd.Series([fd_monthly], index=[fd_label])])
     prices.loc[fd_label] = np.nan
@@ -287,7 +282,7 @@ def run_optimizer(user_inputs):
             "Total Investment", "Time Horizon (Years)", "Max Loss Tolerance (%)", "Investment Style", "FD Rate (%)", "Risk Aversion (A)"
         ],
         "Value": [
-            TOTAL_INVESTMENT, TIME_HORIZON_Y, MAX_LOSS_TOLERANCE_PCT, INVESTMENT_STYLE, FD_RETURN_ANNUAL * 100, RISK_AVERSION_A
+            TOTAL_INVESTMENT, TIME_HORIZON_Y, MAX_LOSS_TOLERANCE_PCT, INVESTMENT_STYLE, FD_RATE, RISK_AVERSION_A
         ]
     })
     

@@ -170,6 +170,15 @@ def fetch_latest_prices(tickers):
             prices[t] = np.nan
     return pd.Series(prices, name="LastPrice")
 
+def compute_expected_returns_capm(betas, monthly_rf, monthly_returns, horizon_m):
+    if monthly_returns is not None and "NIFTY_50" in monthly_returns.columns:
+        mret = monthly_returns["NIFTY_50"].dropna().tail(horizon_m)
+        exp_rm = mret.mean() if len(mret) > 0 else monthly_rf + 0.0065
+    else:
+        exp_rm = monthly_rf + 0.0065
+    exp_excess = exp_rm - monthly_rf
+    return pd.Series(monthly_rf + betas.values * exp_excess, index=betas.index)
+
 def solve_continuous_utility(mu, cov, A, max_loss_tolerance, var_alpha, equity_indices, max_equity_alloc):
     mu_arr, Sigma = mu.values, cov.values
     def obj(w): return -(w @ mu_arr - 0.5 * A * (w @ Sigma @ w))
@@ -241,7 +250,7 @@ def run_optimizer(user_inputs):
         betas=betas,
         monthly_returns=monthly_returns,
         monthly_rf=fd_monthly,
-        time_horizon_m=TIME_HORIZON_M
+        horizon_m=TIME_HORIZON_M
     )
     prices = fetch_latest_prices(betas.index)
     

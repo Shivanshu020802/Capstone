@@ -48,7 +48,7 @@ def get_chatbot_response(user_input, conversation_history):
 
     parsing_prompt = conversation_history + [
         {"role": "system", "content": """
-            Based on the entire conversation so far, extract the four required values and return them in a JSON object. If a value is still missing, use null.
+            Based on the entire conversation so far, extract the five required values and return them in a JSON object. If a value is still missing, use null.
             Do not include any other text.
             Example JSON: {"capital_amount": 2000000, "time_horizon_years": 3, "risk_tolerance_loss_pct": 10, "investment_style": "Moderate", "FD_rate": 6.5}
             """}
@@ -79,7 +79,6 @@ DROP_ASSETS_CONTAINING = ["NIFTY_50", "TBILL"]
 PRICE_LOOKBACK_DAYS = 5
 VAR_ALPHA = 0.95
 
-# The following functions are from your 'THE FINAL DAY.py' and are now correctly integrated.
 def map_risk_aversion_from_var(MAX_LOSS_TOLERANCE):
     if MAX_LOSS_TOLERANCE >= 0.50:
         return 1
@@ -224,7 +223,7 @@ def run_optimizer(user_inputs):
     TIME_HORIZON_Y = user_inputs["TIME_HORIZON_YEARS"]
     MAX_LOSS_TOLERANCE_PCT = user_inputs["RISK_TOLERANCE_LOSS_PCT"]
     INVESTMENT_STYLE = user_inputs["INVESTMENT_STYLE"]
-    FD_RETURN_ANNUAL = user_inputs["FD_RATE"] / 100
+    FD_RATE = user_inputs["FD_RATE"]
 
     MAX_LOSS_TOLERANCE = MAX_LOSS_TOLERANCE_PCT / 100.0
     TIME_HORIZON_M = int(TIME_HORIZON_Y * 12)
@@ -239,13 +238,12 @@ def run_optimizer(user_inputs):
     investable_tickers = betas.index.tolist()
     
     # Use FD_RATE as the risk-free rate
-    rf_annual = FD_RETURN_ANNUAL
-    rf_monthly = (1.0 + rf_annual) ** (1.0/12.0) - 1.0
+    fd_monthly = (1.0 + FD_RATE / 100.0) ** (1.0/12.0) - 1.0
 
     mu = compute_expected_returns_capm(
         betas=betas,
-        monthly_rf=rf_monthly,
         monthly_returns=monthly_returns,
+        monthly_rf=fd_monthly,
         time_horizon_m=TIME_HORIZON_M
     )
     prices = fetch_latest_prices(betas.index)
@@ -260,7 +258,7 @@ def run_optimizer(user_inputs):
 
     # Add FD as synthetic asset
     fd_label = "FIXED_DEPOSIT"
-    mu_all = pd.concat([mu, pd.Series([rf_monthly], index=[fd_label])])
+    mu_all = pd.concat([mu, pd.Series([fd_monthly], index=[fd_label])])
     prices.loc[fd_label] = np.nan
     cov_all = cov.copy()
     cov_all[fd_label] = 0
@@ -298,6 +296,7 @@ def run_optimizer(user_inputs):
         "shares": shares_df,
         "optimal_weights": weights.to_frame("Weight")
     }
+    
 # ==============================================================================
 # PART 3: STREAMLIT APP
 # ==============================================================================

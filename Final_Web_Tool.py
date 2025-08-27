@@ -50,7 +50,7 @@ def get_chatbot_response(user_input, conversation_history):
         {"role": "system", "content": """
             Based on the entire conversation so far, extract the four required values and return them in a JSON object. If a value is still missing, use null.
             Do not include any other text.
-            Example JSON: {"capital_amount": 2000000, "time_horizon_years": 3, "risk_tolerance_loss_pct": 10, "risk_aversion_A": 5.0}
+            Example JSON: {"capital_amount": 2000000, "time_horizon_years": 3, "risk_tolerance_loss_pct": 10, "investment_style": "Moderate", "FD_rate": 6.5}
             """}
     ]
     try:
@@ -66,18 +66,78 @@ def get_chatbot_response(user_input, conversation_history):
         return ai_response, None
 
 # ==============================================================================
-# PART 2: PORTFOLIO OPTIMIZER (UNCHANGED)
+# PART 2: CORE LOGIC (ADAPTED FROM 'THE FINAL DAY.py')
 # ==============================================================================
 
 EXCEL_INPUT = "Nifty50_Portfolio_Analytics.xlsx"
+EXCEL_OUTPUT = "Portfolio_Optimization_Output.xlsx"
 SHEET_BETAS = "Betas"
 SHEET_COV = "Covariance_Matrix"
 SHEET_RET = "Monthly_Returns"
 RFR_TICKER = "^IRX"
-FALLBACK_ANNUAL_RF = 0.045
 DROP_ASSETS_CONTAINING = ["NIFTY_50", "TBILL"]
 PRICE_LOOKBACK_DAYS = 5
-EXCEL_OUTPUT = "Portfolio_Optimization_Output.xlsx"
+VAR_ALPHA = 0.95
+
+# The following functions are from your 'THE FINAL DAY.py' and are now correctly integrated.
+def map_risk_aversion_from_var(MAX_LOSS_TOLERANCE):
+    if MAX_LOSS_TOLERANCE >= 0.50:
+        return 1
+    elif MAX_LOSS_TOLERANCE >= 0.40:
+        return 2
+    elif MAX_LOSS_TOLERANCE >= 0.35:
+        return 3
+    elif MAX_LOSS_TOLERANCE >= 0.30:
+        return 4
+    elif MAX_LOSS_TOLERANCE >= 0.25:
+        return 5
+    elif MAX_LOSS_TOLERANCE >= 0.20:
+        return 6
+    elif MAX_LOSS_TOLERANCE >= 0.15:
+        return 7
+    elif MAX_LOSS_TOLERANCE >= 0.10:
+        return 8
+    elif MAX_LOSS_TOLERANCE >= 0.05:
+        return 9
+    else:
+        return 10
+
+def generate_portfolio_analytics(time_horizon_months):
+    nifty50_tickers = [
+        "ADANIENT.NS", "ADANIPORTS.NS", "APOLLOHOSP.NS", "ASIANPAINT.NS", "AXISBANK.NS",
+        "BAJAJ-AUTO.NS", "BAJFINANCE.NS", "BAJAJFINSV.NS", "BEL.NS", "BHARTIARTL.NS",
+        "CIPLA.NS", "COALINDIA.NS", "DRREDDY.NS", "EICHERMOT.NS", "GRASIM.NS",
+        "HCLTECH.NS", "HDFCBANK.NS", "HDFCLIFE.NS", "HEROMOTOCO.NS", "HINDALCO.NS",
+        "HINDUNILVR.NS", "ICICIBANK.NS", "INDUSINDBK.NS", "INFY.NS", "ITC.NS",
+        "JIOFIN.NS", "JSWSTEEL.NS", "KOTAKBANK.NS", "LT.NS", "M&M.NS",
+        "MARUTI.NS", "NESTLEIND.NS", "NTPC.NS", "ONGC.NS", "POWERGRID.NS",
+        "RELIANCE.NS", "SBILIFE.NS", "SBIN.NS", "SHRIRAMFIN.NS", "SUNPHARMA.NS",
+        "TCS.NS", "TATACONSUM.NS", "TATAMOTORS.NS", "TATASTEEL.NS", "TECHM.NS",
+        "TITAN.NS", "TRENT.NS", "ULTRACEMCO.NS", "WIPRO.NS", "NIFTY_50"
+    ]
+    all_tickers = [yf.Ticker(t) for t in nifty50_tickers]
+    data = yf.download([t.ticker for t in all_tickers], period='max')['Close']
+    data = data.rename(columns={t.ticker: t.ticker for t in all_tickers})
+    data.dropna(inplace=True)
+    monthly_prices = data.resample('M').last()
+    monthly_returns = monthly_prices.pct_change().dropna()
+    returns_subset = monthly_returns.tail(time_horizon_months)
+    betas = {}
+    nifty_returns = returns_subset['NIFTY_50']
+    for col in returns_subset.columns:
+        if col == 'NIFTY_50':
+            continue
+        cov_val = np.cov(returns_subset[col].dropna(), nifty_returns.dropna())[0][1]
+        var_val = np.var(nifty_returns.dropna())
+        beta = cov_val / var_val if var_val != 0 else np.nan
+        betas[col] = beta
+    beta_df = pd.DataFrame.from_dict(betas, orient='index', columns=['Beta'])
+    cov_matrix = returns_subset.cov()
+    with pd.ExcelWriter(EXCEL_INPUT, engine='openpyxl') as writer:
+        monthly_returns.to_excel(writer, sheet_name='Monthly_Returns')
+        returns_subset.to_excel(writer, sheet_name=f'Returns_Last_{time_horizon_months}M')
+        beta_df.to_excel(writer, sheet_name='Betas')
+        cov_matrix.to_excel(writer, sheet_name='Covariance_Matrix')
 
 def read_inputs():
     if not os.path.exists(EXCEL_INPUT):
@@ -85,9 +145,7 @@ def read_inputs():
     xl = pd.ExcelFile(EXCEL_INPUT)
     betas = pd.read_excel(xl, SHEET_BETAS, index_col=0)
     cov = pd.read_excel(xl, SHEET_COV, index_col=0)
-    monthly_returns = None
-    if SHEET_RET in xl.sheet_names:
-        monthly_returns = pd.read_excel(xl, SHEET_RET, index_col=0, parse_dates=True)
+    monthly_returns = pd.read_excel(xl, SHEET_RET, index_col=0, parse_dates=True)
     cov = cov.loc[cov.index.intersection(cov.columns), cov.columns.intersection(cov.index)]
     assets = list(cov.columns)
     investable = []
@@ -99,40 +157,6 @@ def read_inputs():
     beta_series = beta_series.reindex(investable).astype(float)
     cov_invest = cov.loc[investable, investable]
     return beta_series, cov_invest, monthly_returns
-
-def fetch_latest_risk_free_monthly():
-    if RFR_TICKER is None and FALLBACK_ANNUAL_RF is None:
-        raise ValueError("Provide RFR_TICKER or FALLBACK_ANNUAL_RF")
-    annual_rf = None
-    if RFR_TICKER:
-        try:
-            r = yf.download(RFR_TICKER, period="1mo", interval="1d", progress=False)
-            if not r.empty and "Close" in r:
-                latest = r["Close"].dropna().iloc[-1]
-                annual_rf = (latest / 100.0) if latest > 1 else float(latest)
-        except Exception as e:
-            warnings.warn(f"Risk-free fetch failed: {e}")
-    if annual_rf is None:
-        if FALLBACK_ANNUAL_RF is None:
-            raise RuntimeError("Could not fetch risk-free and no FALLBACK_ANNUAL_RF set.")
-        annual_rf = float(FALLBACK_ANNUAL_RF)
-    monthly_rf = (1.0 + annual_rf) ** (1.0/12.0) - 1.0
-    return monthly_rf, annual_rf
-
-def compute_expected_returns_capm(betas, monthly_rf, monthly_returns, time_horizon_m):
-    if monthly_returns is not None and "NIFTY_50" in monthly_returns.columns:
-        mret = monthly_returns["NIFTY_50"].dropna()
-        if time_horizon_m is not None and time_horizon_m > 0:
-            mret = mret.tail(time_horizon_m)
-        if len(mret) == 0:
-            raise ValueError("No NIFTY_50 returns found to compute market return.")
-        exp_rm = mret.mean()
-    else:
-        warnings.warn("Monthly_Returns with NIFTY_50 not found; assuming market premium of 0.5%/month.")
-        exp_rm = monthly_rf + 0.0065
-    exp_excess = exp_rm - monthly_rf
-    exp_rets = monthly_rf + betas.values * exp_excess
-    return pd.Series(exp_rets, index=betas.index, name="E_monthly_CAPM")
 
 def fetch_latest_prices(tickers):
     prices = {}
@@ -147,122 +171,131 @@ def fetch_latest_prices(tickers):
             prices[t] = np.nan
     return pd.Series(prices, name="LastPrice")
 
-def solve_continuous_utility(mu, cov, A, max_loss_tolerance, var_alpha):
-    n = len(mu)
-    mu = np.asarray(mu, dtype=float)
-    Sigma = np.asarray(cov, dtype=float)
-    def obj(w):
-        return -(w @ mu - 0.5 * A * (w @ Sigma @ w))
-    cons = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
-    if max_loss_tolerance is not None:
+def solve_continuous_utility(mu, cov, A, max_loss_tolerance, var_alpha, equity_indices, max_equity_alloc):
+    mu_arr, Sigma = mu.values, cov.values
+    def obj(w): return -(w @ mu_arr - 0.5 * A * (w @ Sigma @ w))
+    cons = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
+    if max_loss_tolerance:
         z = norm.ppf(1 - var_alpha)
         def var_con(w):
-            mean_r = w @ mu
-            std_r  = math.sqrt(w @ Sigma @ w)
-            ann_mean = (1 + mean_r)**12 - 1
-            ann_std  = std_r * math.sqrt(12)
-            var_95 = -(ann_mean + z * ann_std)
-            return max_loss_tolerance - var_95
+            mean_r = w @ mu_arr
+            std_r = math.sqrt(w @ Sigma @ w)
+            ann_mean = (1 + mean_r) ** 12 - 1
+            ann_std = std_r * math.sqrt(12)
+            var_value = -(ann_mean - z * ann_std)
+            return max_loss_tolerance - var_value
         cons.append({"type": "ineq", "fun": var_con})
-    bounds = [(0.0, 1.0)] * n
-    w0 = np.ones(n) / n
-    res = minimize(obj, w0, method="SLSQP", bounds=bounds, constraints=cons, options={"maxiter": 200})
-    if not res.success:
-        warnings.warn(f"Continuous optimizer warning: {res.message}")
-    w = np.clip(res.x, 0, 1)
-    w = w / w.sum()
-    util = w @ mu - 0.5 * A * (w @ Sigma @ w)
-    std = math.sqrt(w @ Sigma @ w)
-    return w, util, std
+    cons.append({"type": "ineq", "fun": lambda w: max_equity_alloc - np.sum(w[equity_indices])})
+    bounds = [(0, 1)] * len(mu)
+    res = minimize(obj, np.ones(len(mu)) / len(mu), method="SLSQP", bounds=bounds, constraints=cons)
+    return res.x if res.success else None
 
-def integer_shares_from_weights(weights, prices, total_investment):
-    n = {}
-    for t in weights.index:
-        alloc_value = weights[t] * total_investment
-        p = prices[t]
-        if pd.isna(p) or p <= 0:
-            n[t] = 0
-        else:
-            n[t] = int(math.floor(alloc_value / p))
-    invested_values = prices * pd.Series(n)
-    invested_values = invested_values.fillna(0.0)
-    invested_total = invested_values.sum()
-    realized_weights = invested_values / total_investment
-    cash_weight = max(0.0, 1.0 - realized_weights.sum())
-    return pd.Series(n, name="Shares"), realized_weights, cash_weight, invested_total
-
-def portfolio_stats(weights, mu, cov, rf_monthly, cash_weight):
-    w = weights.fillna(0.0).values
-    mu_vec = mu.reindex(weights.index).values
-    Sigma = cov.reindex(index=weights.index, columns=weights.index).values
-    mean_r = w @ mu_vec
-    var_r = w @ Sigma @ w
-    if cash_weight > 0:
-        mean_r = mean_r + cash_weight * rf_monthly
-    std_r = math.sqrt(max(var_r, 0.0))
-    return mean_r, std_r
+def compute_integer_shares(weights, prices, total_investment):
+    shares_dict = {}
+    total_allocated = 0
+    for ticker, w in weights.items():
+        if ticker == "FIXED_DEPOSIT":
+            allocated_amt = total_investment * w
+            shares_dict[ticker] = {"Price": np.nan, "Shares": np.nan, "Allocated_Value": allocated_amt, "Allocation_%": w*100}
+            total_allocated += allocated_amt
+            continue
+        price = prices.get(ticker, np.nan)
+        if np.isnan(price) or price <= 0:
+            shares_dict[ticker] = {"Price": price, "Shares": 0, "Allocated_Value": 0, "Allocation_%": 0}
+            continue
+        allocated_amt = total_investment * w
+        num_shares = int(np.floor(allocated_amt / price))
+        actual_allocated = num_shares * price
+        total_allocated += actual_allocated
+        shares_dict[ticker] = {
+            "Price": price,
+            "Shares": num_shares,
+            "Allocated_Value": actual_allocated,
+            "Allocation_%": actual_allocated / total_investment * 100
+        }
+    leftover_cash = total_investment - total_allocated
+    df_shares = pd.DataFrame.from_dict(shares_dict, orient="index")
+    df_shares.index.name = "Asset"
+    df_shares["Leftover_Cash"] = leftover_cash if "FIXED_DEPOSIT" in df_shares.index else np.nan
+    return df_shares
 
 def run_optimizer(user_inputs):
-    TOTAL_INVESTMENT = user_inputs['TOTAL_INVESTMENT']
-    RISK_AVERSION_A = user_inputs['RISK_AVERSION_A']
-    TIME_HORIZON_M = user_inputs['TIME_HORIZON_M']
-    MAX_LOSS_TOLERANCE = user_inputs['RISK_TOLERANCE_LOSS_PCT'] / 100.0
-    VAR_ALPHA = 0.95
+    TOTAL_INVESTMENT = user_inputs["TOTAL_INVESTMENT"]
+    TIME_HORIZON_M = user_inputs["TIME_HORIZON_YEARS"] * 12
+    MAX_LOSS_TOLERANCE_PCT = user_inputs["RISK_TOLERANCE_LOSS_PCT"]
+    INVESTMENT_STYLE = user_inputs["INVESTMENT_STYLE"]
+    FD_RETURN_ANNUAL = user_inputs["FD_RATE"] / 100
+
+    MAX_LOSS_TOLERANCE = MAX_LOSS_TOLERANCE_PCT / 100.0
+
+    # Calculate Risk Aversion (A) based on Max Loss Tolerance
+    RISK_AVERSION_A = map_risk_aversion_from_var(MAX_LOSS_TOLERANCE)
+
+    # This part of the code now generates the analytics file dynamically.
+    generate_portfolio_analytics(TIME_HORIZON_M)
+    
     betas, cov, monthly_returns = read_inputs()
     investable_tickers = betas.index.tolist()
-    rf_monthly, rf_annual = fetch_latest_risk_free_monthly()
+    
+    # Use FD_RATE as the risk-free rate
+    fd_monthly = (1.0 + FD_RETURN_ANNUAL) ** (1.0/12.0) - 1.0
+
     mu = compute_expected_returns_capm(
         betas=betas,
-        monthly_rf=rf_monthly,
         monthly_returns=monthly_returns,
+        monthly_rf=fd_monthly,
         time_horizon_m=TIME_HORIZON_M
     )
-    prices = fetch_latest_prices(investable_tickers)
-    w_cont, util_cont, std_cont = solve_continuous_utility(
-        mu, cov, RISK_AVERSION_A,
+    prices = fetch_latest_prices(betas.index)
+    
+    # Max Equity Allocation based on Style
+    TIME_HORIZON_Y = user_inputs["TIME_HORIZON_YEARS"]
+    if INVESTMENT_STYLE.lower() == "aggressive":
+        max_equity_alloc = min(0.30 + 0.02 * TIME_HORIZON_Y + 0.35, 0.90)
+    elif INVESTMENT_STYLE.lower() == "moderate":
+        max_equity_alloc = min(0.30 + 0.02 * TIME_HORIZON_Y + 0.20, 0.90)
+    else:
+        max_equity_alloc = min(0.30 + 0.02 * TIME_HORIZON_Y, 0.90)
+
+    # Add FD as synthetic asset
+    fd_label = "FIXED_DEPOSIT"
+    mu_all = pd.concat([mu, pd.Series([fd_monthly], index=[fd_label])])
+    prices.loc[fd_label] = np.nan
+    cov_all = cov.copy()
+    cov_all[fd_label] = 0
+    cov_all.loc[fd_label] = 0
+    equity_indices = [i for i, lbl in enumerate(mu_all.index) if lbl != fd_label]
+    
+    w = solve_continuous_utility(
+        mu_all, cov_all, RISK_AVERSION_A,
         max_loss_tolerance=MAX_LOSS_TOLERANCE,
-        var_alpha=VAR_ALPHA
+        var_alpha=VAR_ALPHA,
+        equity_indices=equity_indices,
+        max_equity_alloc=max_equity_alloc
     )
-    w_cont = pd.Series(w_cont, index=investable_tickers, name="Weight")
-    shares, w_realized, cash_w, invested_total = integer_shares_from_weights(w_cont, prices, TOTAL_INVESTMENT)
-    er_cont, sd_cont = portfolio_stats(w_cont, mu, cov, rf_monthly=rf_monthly, cash_weight=0.0)
-    er_int, sd_int = portfolio_stats(w_realized, mu, cov, rf_monthly=rf_monthly, cash_weight=cash_w)
-    util_int = er_int - 0.5 * RISK_AVERSION_A * (sd_int ** 2)
-    ann_er_cont = (1 + er_cont)**12 - 1
-    ann_sd_cont = sd_cont * math.sqrt(12)
-    ann_er_int  = (1 + er_int)**12 - 1
-    ann_sd_int  = sd_int * math.sqrt(12)
-    exp_returns_df = mu.to_frame()
-    prices_df = prices.to_frame()
-    w_cont_df = w_cont.to_frame()
-    w_realized_df = w_realized.rename("RealizedWeight").to_frame()
-    shares_df = shares.to_frame()
+    if w is None:
+        raise RuntimeError("Optimization failed to find a solution.")
+
+    weights = pd.Series(w, index=mu_all.index)
+
+    port_return = (1 + weights @ mu_all.values) ** 12 - 1
+    port_std = math.sqrt(weights @ cov_all.values @ weights) * math.sqrt(12)
+
+    shares_df = compute_integer_shares(weights, prices, TOTAL_INVESTMENT)
+    
     summary = pd.DataFrame({
         "Metric": [
-            "Annual Risk-free (input/fetched)",
-            "Monthly Risk-free (derived)",
-            "Cont. Portfolio E[Rp] (monthly)",
-            "Cont. Portfolio Std (monthly)",
-            "Cont. Portfolio E[Rp] (annual)",
-            "Cont. Portfolio Std (annual)",
-            "Cont. Utility",
-            "Integer E[Rp] (monthly, inc. cash)",
-            "Integer Std (monthly, inc. cash)",
-            "Integer E[Rp] (annual, inc. cash)",
-            "Integer Std (annual, inc. cash)",
-            "Integer Utility",
-            "Realized cash weight",
-            "Total Invested (from shares)"
+            "Total Investment", "Time Horizon (Years)", "Max Loss Tolerance (%)", "Investment Style", "FD Rate (%)", "Risk Aversion (A)"
         ],
         "Value": [
-            rf_annual, rf_monthly, er_cont, sd_cont, ann_er_cont, ann_sd_cont, util_cont, er_int, sd_int, ann_er_int, ann_sd_int, util_int, cash_w, invested_total
+            TOTAL_INVESTMENT, TIME_HORIZON_Y, MAX_LOSS_TOLERANCE_PCT, INVESTMENT_STYLE, FD_RETURN_ANNUAL * 100, RISK_AVERSION_A
         ]
     })
     
     return {
         "summary": summary,
         "shares": shares_df,
-        "optimal_weights": w_cont_df
+        "optimal_weights": weights.to_frame("Weight")
     }
 
 # ==============================================================================
@@ -275,19 +308,23 @@ st.title("Intelligent Portfolio Tool 📈")
 st.write("Welcome! Let's build your optimized investment portfolio.")
 st.markdown("---")
 
-# Initialize chat history in session state
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {"role": "system", "content": """
-            You are a highly intelligent and friendly financial assistant. Your purpose is to have a natural conversation with the user to understand their investment goals and financial personality. You need to collect four key pieces of information:
+            You are a highly intelligent and friendly financial assistant. Your purpose is to have a natural conversation with the user to understand their investment goals and financial personality. You need to collect five key pieces of information:
             1. Total investment capital (a number, converting 'lakhs' or 'crores' to a standard numerical value).
             2. Investment time horizon in years (a number).
             3. Maximum acceptable loss percentage (a number).
-            4. The user's risk aversion coefficient (A), which you must infer from the user's description of their financial personality or goals (e.g., 'aggressive', 'conservative', 'I can handle a lot of risk'). Do not ask for a number for this.
+            4. Investment style ('Aggressive', 'Moderate', or 'Conservative').
+            5. Expected Fixed Deposit rates (a number).
             
             Based on the conversation, you must fill a JSON object with these values. If a value is unknown, use null.
-            Example JSON: {"capital_amount": 2000000, "time_horizon_years": 3, "risk_tolerance_loss_pct": 10, "risk_aversion_A": 5.0}
-
+            Example JSON: {"capital_amount": 2000000, "time_horizon_years": 3, "risk_tolerance_loss_pct": 10, "investment_style": "Moderate", "FD_rate": 6.5}
+            
+            Your conversation should also include these explanations:
+            - Explain what an "expected loss" is, as the maximum potential loss with a 95% probability (also known as VaR at 95%).
+            - Explain what the different investment styles depict: Aggressive style implies a high equity allocation, Moderate implies a moderate allocation, and Conservative implies a low allocation.
+            
             Start the conversation by greeting the user and asking for their investment details.
             """},
         {"role": "assistant", "content": "Hello! I'm your portfolio assistant. Please tell me about your investment details so I can help you."}
@@ -298,7 +335,8 @@ if "inputs_collected" not in st.session_state:
         "capital_amount": None,
         "time_horizon_years": None,
         "risk_tolerance_loss_pct": None,
-        "risk_aversion_A": None
+        "investment_style": None,
+        "FD_rate": None
     }
 
 for message in st.session_state.messages:
@@ -337,9 +375,10 @@ if st.session_state.inputs_collected.get("all_found"):
         with st.spinner("Running optimizer..."):
             user_inputs_for_optimizer = {
                 "TOTAL_INVESTMENT": float(st.session_state.inputs_collected["capital_amount"]),
-                "RISK_AVERSION_A": float(st.session_state.inputs_collected["risk_aversion_A"]),
-                "TIME_HORIZON_M": int(st.session_state.inputs_collected["time_horizon_years"] * 12),
-                "RISK_TOLERANCE_LOSS_PCT": float(st.session_state.inputs_collected["risk_tolerance_loss_pct"])
+                "TIME_HORIZON_YEARS": float(st.session_state.inputs_collected["time_horizon_years"]),
+                "RISK_TOLERANCE_LOSS_PCT": float(st.session_state.inputs_collected["risk_tolerance_loss_pct"]),
+                "INVESTMENT_STYLE": st.session_state.inputs_collected["investment_style"],
+                "FD_RATE": float(st.session_state.inputs_collected["FD_rate"])
             }
             
             try:

@@ -330,8 +330,8 @@ def run_optimizer(user_inputs):
     port_std = math.sqrt(weights @ cov_all.values @ weights) * math.sqrt(12)
     shares_df = compute_integer_shares(weights, prices, TOTAL_INVESTMENT)
 
-    # Get Nifty50 performance for comparison
-    nifty_returns_monthly = monthly_returns['NIFTY_50'].dropna()
+    # Get Nifty50 performance for comparison over the same time horizon
+    nifty_returns_monthly = monthly_returns['NIFTY_50'].dropna().tail(time_horizon_m)
     nifty_mean = nifty_returns_monthly.mean()
     nifty_std = nifty_returns_monthly.std()
     nifty_ann_return = (1 + nifty_mean) ** 12 - 1

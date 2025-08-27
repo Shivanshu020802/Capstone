@@ -221,12 +221,13 @@ def compute_integer_shares(weights, prices, total_investment):
 
 def run_optimizer(user_inputs):
     TOTAL_INVESTMENT = user_inputs["TOTAL_INVESTMENT"]
-    TIME_HORIZON_M = user_inputs["TIME_HORIZON_YEARS"] * 12
+    TIME_HORIZON_Y = user_inputs["TIME_HORIZON_YEARS"]
     MAX_LOSS_TOLERANCE_PCT = user_inputs["RISK_TOLERANCE_LOSS_PCT"]
     INVESTMENT_STYLE = user_inputs["INVESTMENT_STYLE"]
     FD_RETURN_ANNUAL = user_inputs["FD_RATE"] / 100
 
     MAX_LOSS_TOLERANCE = MAX_LOSS_TOLERANCE_PCT / 100.0
+    TIME_HORIZON_M = int(TIME_HORIZON_Y * 12)
 
     # Calculate Risk Aversion (A) based on Max Loss Tolerance
     RISK_AVERSION_A = map_risk_aversion_from_var(MAX_LOSS_TOLERANCE)
@@ -238,18 +239,18 @@ def run_optimizer(user_inputs):
     investable_tickers = betas.index.tolist()
     
     # Use FD_RATE as the risk-free rate
-    fd_monthly = (1.0 + FD_RETURN_ANNUAL) ** (1.0/12.0) - 1.0
+    rf_annual = FD_RETURN_ANNUAL
+    rf_monthly = (1.0 + rf_annual) ** (1.0/12.0) - 1.0
 
     mu = compute_expected_returns_capm(
         betas=betas,
+        monthly_rf=rf_monthly,
         monthly_returns=monthly_returns,
-        monthly_rf=fd_monthly,
         time_horizon_m=TIME_HORIZON_M
     )
     prices = fetch_latest_prices(betas.index)
     
     # Max Equity Allocation based on Style
-    TIME_HORIZON_Y = user_inputs["TIME_HORIZON_YEARS"]
     if INVESTMENT_STYLE.lower() == "aggressive":
         max_equity_alloc = min(0.30 + 0.02 * TIME_HORIZON_Y + 0.35, 0.90)
     elif INVESTMENT_STYLE.lower() == "moderate":
@@ -259,7 +260,7 @@ def run_optimizer(user_inputs):
 
     # Add FD as synthetic asset
     fd_label = "FIXED_DEPOSIT"
-    mu_all = pd.concat([mu, pd.Series([fd_monthly], index=[fd_label])])
+    mu_all = pd.concat([mu, pd.Series([rf_monthly], index=[fd_label])])
     prices.loc[fd_label] = np.nan
     cov_all = cov.copy()
     cov_all[fd_label] = 0
@@ -297,7 +298,6 @@ def run_optimizer(user_inputs):
         "shares": shares_df,
         "optimal_weights": weights.to_frame("Weight")
     }
-
 # ==============================================================================
 # PART 3: STREAMLIT APP
 # ==============================================================================
